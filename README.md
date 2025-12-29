@@ -78,3 +78,4 @@ npm start
 - It adds a 2-second delay between pages to be a "good citizen" and avoid rate limiting.
 
 <!-- updated 2025-12-26 -->
+<!-- updated 2025-12-29 -->

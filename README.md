@@ -1,0 +1,67 @@
+# Confluence Cloud Browser Automation PDF Exporter
+
+This tool automates the process of exporting Confluence Cloud pages to PDF using a normal user account (no admin API required). It utilizes [Playwright](https://playwright.dev/) to navigate the UI, click "Export to PDF", and save the files locally.
+
+## Prerequisites
+
+- Node.js (v14 or higher)
+- A valid Confluence Cloud account
+
+## Setup
+
+1. **Install Dependencies**
+   ```bash
+   npm install
+   ```
+
+2. **Configure the Script**
+   Open `src/config.ts` and update the `spaceUrl` with the URL of your Confluence Space.
+   
+   Example:
+   ```typescript
+   export const config = {
+       spaceUrl: "https://your-domain.atlassian.net/wiki/spaces/MYSPACE/overview",
+       outputDir: "./output",
+       // ...
+   };
+   ```
+
+## Usage
+
+### 1. First Run (Authentication)
+The script needs to save your login session.
+Run the script:
+```bash
+npx ts-node src/index.ts
+```
+- If no `auth.json` is found, a **browser window will open**.
+- Log in to Atlassian manually.
+- **Wait until you see the Space home page.**
+- Go back to the terminal and press **ENTER**.
+- The script will save `auth.json` and proceed to scan/export.
+
+### 2. Subsequent Runs
+Just run the command again. It will reuse the session in `auth.json`.
+```bash
+npx ts-node src/index.ts
+```
+
+## How It Works
+
+1. **Crawler**: Navigates to the Space's "Pages" list (or handles infinite scroll) to build a list of all page URLs.
+2. **Exporter**: 
+   - Visits each page.
+   - Clicks the "..." (More actions) menu.
+   - Selects "Export to PDF".
+   - Handles the download confirmation.
+   - Saves the file as `SpaceName_PageTitle.pdf`.
+
+## Troubleshooting
+
+- **Timeout Errors**: Increase `timeout` in `config.ts` if your pages are large or PDF generation is slow.
+- **Login Issues**: Delete `auth.json` and run the script again to re-authenticate.
+- **Missed Pages**: If the crawler doesn't find all pages, verify if the Space uses a custom homepage layout. The script attempts to find the standard "Pages" tree view.
+
+## Notes
+- This script runs in **Headed** mode by default (`headless: false`) so you can watch the progress. You can change this in `config.ts`.
+- It adds a 2-second delay between pages to be a "good citizen" and avoid rate limiting.

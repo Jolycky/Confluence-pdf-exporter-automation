@@ -1,5 +1,5 @@
 {
-  "name": "confluence-cloud-automated-pdf-exporter",
+  "name": "confluence-automated-pdf-exporter",
   "version": "1.0.0",
   "description": "Automated PDF export for Confluence Cloud pages using Playwright",
   "main": "index.js",

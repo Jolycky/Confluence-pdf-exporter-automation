@@ -95,7 +95,19 @@ async function main() {
 
         for (const [index, p] of pagesToExport.entries()) {
             console.log(`[${index + 1}/${pagesToExport.length}] Starting export for: ${p.title}`);
-            const success = await exportPageRobust(page, p.url, spaceOutputDir);
+
+            // Construct full output path: output/space/parent/child/
+            let targetDir = spaceOutputDir;
+            if ((p as any).path) {
+                targetDir = path.join(spaceOutputDir, (p as any).path);
+            }
+
+            // Ensure directory exists
+            if (!fs.existsSync(targetDir)) {
+                fs.mkdirSync(targetDir, { recursive: true });
+            }
+
+            const success = await exportPageRobust(page, p.url, targetDir);
 
             if (success) {
                 successCount++;

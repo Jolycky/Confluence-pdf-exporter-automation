@@ -25,3 +25,16 @@ playwright/.cache/
 # System
 .DS_Store
 Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+
+# Environment Variables
+.env
+.env.local
+
+# Debug Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

@@ -97,6 +97,9 @@ export async function getSpacePages(page: Page, spaceUrl: string): Promise<Space
     // This runs INSIDE the browser, using the user's existing auth session.
     console.log("Fetching pages via internal API...");
 
+    // Helper to sanitize filenames (duplicated inside evaluate context or passed)
+    // We cannot easily pass functions into evaluate, so we define simple logic inside.
+
     const pages = await page.evaluate(async (sKey) => {
         const allPages: any[] = [];
         let start = 0;
@@ -110,7 +113,8 @@ export async function getSpacePages(page: Page, spaceUrl: string): Promise<Space
 
         while (true) {
             try {
-                const url = `${apiEndpoint}?spaceKey=${sKey}&type=page&limit=${limit}&start=${start}&expand=space,body.view,version`;
+                // Expand ancestors to build path
+                const url = `${apiEndpoint}?spaceKey=${sKey}&type=page&limit=${limit}&start=${start}&expand=space,body.view,version,ancestors`;
                 console.log(`Fetching: ${url}`);
                 const response = await window.fetch(url);
 
@@ -130,11 +134,26 @@ export async function getSpacePages(page: Page, spaceUrl: string): Promise<Space
 
                 // Map to our structure
                 // API returns: { id, title, _links: { webui } }
-                const mapped = results.map((r: any) => ({
-                    title: r.title,
-                    // Construct full URL from relative webui link
-                    url: window.location.origin + pathPrefix + r._links.webui.replace(/^\/wiki/, '')
-                }));
+                const mapped = results.map((r: any) => {
+                    // Build path from ancestors
+                    let pathParts: string[] = [];
+                    if (r.ancestors && r.ancestors.length > 0) {
+                        pathParts = r.ancestors.map((a: any) => {
+                            // Simple sanitize
+                            return a.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+                        });
+                    }
+                    // Join with separator (we use forward slash for now, handled by Node's path.join later)
+                    // Note: This path is relative to Space root.
+                    const relPath = pathParts.join('/');
+
+                    return {
+                        title: r.title,
+                        // Construct full URL from relative webui link
+                        url: window.location.origin + pathPrefix + r._links.webui.replace(/^\/wiki/, ''),
+                        path: relPath
+                    };
+                });
 
                 allPages.push(...mapped);
 

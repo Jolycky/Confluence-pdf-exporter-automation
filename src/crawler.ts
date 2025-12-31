@@ -5,93 +5,127 @@ export interface PageInfo {
     url: string;
 }
 
-export async function getSpacePages(page: Page, spaceUrl: string): Promise<PageInfo[]> {
+export interface SpaceData {
+    spaceName: string;
+    pages: PageInfo[];
+}
+
+// Helper to get Space Key from URL or UI
+function getSpaceKey(spaceUrl: string): string {
+    // Try to match standard pattern /spaces/KEY/
+    const match = spaceUrl.match(/spaces\/([^\/]+)/);
+    // If not found, maybe it's just /display/KEY/
+    const matchDisplay = spaceUrl.match(/display\/([^\/]+)/);
+
+    return match ? match[1] : (matchDisplay ? matchDisplay[1] : '');
+}
+
+export async function getSpacePages(page: Page, spaceUrl: string): Promise<SpaceData> {
     console.log(`Navigating to space to find pages: ${spaceUrl}`);
 
-    // Attempt to construct the Pages URL. 
-    // If spaceUrl is ".../overview", try switching to ".../pages"
-    let pagesUrl = spaceUrl;
-    if (spaceUrl.endsWith('/overview')) {
-        pagesUrl = spaceUrl.replace('/overview', '/pages');
-    } else if (!spaceUrl.endsWith('/pages')) {
-        // Just append /pages if it looks like a root space URL
-        pagesUrl = spaceUrl.replace(/\/$/, '') + '/pages';
-    }
+    await page.goto(spaceUrl);
+    await page.waitForLoadState('domcontentloaded');
 
-    console.log(`Going to Pages view: ${pagesUrl}`);
-    await page.goto(pagesUrl);
-    await page.waitForLoadState('networkidle');
-
-    // Wait for the main list container. 
-    // Selectors vary by Confluence version. We'll look for common table rows or list items.
-    // Try to click "All pages" or "Page tree" if available to ensure we see everything.
-    // However, the default view often shows "Recently updated". We want "All pages".
-    // We'll look for a link text "All pages" or similar only if we aren't sure.
-
-    const allPagesLink = page.getByRole('link', { name: 'All pages', exact: false }); // "See all pages" etc
-    if (await allPagesLink.count() > 0 && await allPagesLink.isVisible()) {
-        try {
-            // It might be already active?
-            await allPagesLink.first().click();
-            await page.waitForLoadState('domcontentloaded');
-        } catch (e) {
-            console.log("Could not click 'All pages', proceeding with current view.");
+    // Extract Space Name
+    let spaceName = "Unknown Space";
+    try {
+        const header = page.locator('[data-testid="space-header"] h1, h1[data-test-id="space-header-title"]');
+        if (await header.count() > 0) {
+            spaceName = (await header.first().textContent()) || spaceName;
+        } else {
+            const title = await page.title();
+            const parts = title.split(' - ');
+            if (parts.length >= 2) spaceName = parts[parts.length - 2];
         }
+    } catch (e) { }
+    spaceName = spaceName.trim();
+    console.log(`Detected Space Name: ${spaceName}`);
+
+    // Determine Space Key
+    let spaceKey = getSpaceKey(spaceUrl);
+    if (!spaceKey) {
+        // Try to get from meta tag
+        spaceKey = await page.getAttribute('meta[name="confluence-space-key"]', 'content') || '';
+    }
+    console.log(`Detected Space Key: ${spaceKey}`);
+
+    if (!spaceKey) {
+        console.warn("Could not determine Space Key from URL. Trying to scrape UI context...");
+        try {
+            // AJS provided by Confluence usually
+            const keyFromVar = await page.evaluate(() => (window as any).AJS?.params?.spaceKey);
+            if (keyFromVar) spaceKey = keyFromVar;
+        } catch (e) { }
     }
 
-    // SCROLLING / PAGINATION
-    console.log("Scrolling to load all pages...");
-    let previousHeight = 0;
-    const scrollDelay = 2000;
-    const maxScrolls = 100; // Safety limit
+    if (!spaceKey) {
+        throw new Error("Failed to determine Space Key. Cannot proceed with API fetch.");
+    }
 
-    for (let i = 0; i < maxScrolls; i++) {
-        previousHeight = await page.evaluate(() => document.body.scrollHeight);
-        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-        await page.waitForTimeout(scrollDelay);
+    // INTERNAL API FETCH STRATEGY
+    // This runs INSIDE the browser, using the user's existing auth session.
+    console.log("Fetching pages via internal API...");
 
-        const newHeight = await page.evaluate(() => document.body.scrollHeight);
-        if (newHeight === previousHeight) {
-            // Check if there is a "Load more" button
-            const loadMore = page.getByRole('button', { name: /Load more/i });
-            if (await loadMore.count() > 0 && await loadMore.isVisible()) {
-                await loadMore.first().click();
-                await page.waitForTimeout(scrollDelay);
-            } else {
-                console.log("Reached bottom of page list.");
-                break;
+    const pages = await page.evaluate(async (sKey) => {
+        const allPages: any[] = [];
+        let start = 0;
+        const limit = 50;
+
+        // Dynamic context path detection
+        // Confluence Cloud usually is /wiki, but just in case.
+        const pathPrefix = window.location.pathname.startsWith('/wiki') ? '/wiki' : '';
+        const apiEndpoint = `${pathPrefix}/rest/api/content`;
+        console.log(`Using API Endpoint: ${apiEndpoint}`);
+
+        while (true) {
+            try {
+                const url = `${apiEndpoint}?spaceKey=${sKey}&type=page&limit=${limit}&start=${start}&expand=space,body.view,version`;
+                console.log(`Fetching: ${url}`);
+                const response = await window.fetch(url);
+
+                if (response.status === 401 || response.status === 403) {
+                    return { error: `Authentication failed (Status ${response.status}). Please delete auth.json and re-login.` };
+                }
+
+                if (!response.ok) {
+                    console.error("Fetch returned status:", response.status);
+                    return { error: `API Fetch failed with status ${response.status} for URL ${url}` };
+                }
+
+                const data = await response.json();
+                const results = data.results;
+
+                if (!results || results.length === 0) break;
+
+                // Map to our structure
+                // API returns: { id, title, _links: { webui } }
+                const mapped = results.map((r: any) => ({
+                    title: r.title,
+                    // Construct full URL from relative webui link
+                    url: window.location.origin + pathPrefix + r._links.webui.replace(/^\/wiki/, '')
+                }));
+
+                allPages.push(...mapped);
+
+                if (results.length < limit) break; // Finished
+                start += limit;
+
+            } catch (e: any) {
+                console.error("API Fetch Error:", e);
+                return { error: `Exception during fetch: ${e.message}` };
             }
         }
+        return allPages;
+    }, spaceKey);
+
+    if (Array.isArray(pages)) {
+        console.log(`Found ${pages.length} pages via API.`);
+        return {
+            spaceName,
+            pages: pages
+        };
+    } else {
+        // This will be caught by index.ts main loop
+        throw new Error("Failed to fetch pages: " + JSON.stringify(pages));
     }
-
-    // COLLECT LINKS
-    // We are looking for links to pages. 
-    // Pattern: /wiki/spaces/KEY/pages/PAGEID/Title
-    // We filter for unique hrefs.
-
-    console.log("Extracting links...");
-    const links = await page.evaluate(() => {
-        const anchors = Array.from(document.querySelectorAll('a'));
-        return anchors
-            .map(a => ({
-                title: a.innerText.trim(),
-                url: a.href
-            }))
-            .filter(item => {
-                return item.url.includes('/pages/') &&
-                    !item.url.includes('/pages/edit') && // ignore edit links
-                    !item.url.includes('?'); // ignore query params often used for sorting
-            });
-    });
-
-    // Deduplicate
-    const uniquePages = new Map<string, PageInfo>();
-    for (const link of links) {
-        if (link.title && link.url) {
-            uniquePages.set(link.url, link);
-        }
-    }
-
-    console.log(`Found ${uniquePages.size} potential pages.`);
-    return Array.from(uniquePages.values());
 }

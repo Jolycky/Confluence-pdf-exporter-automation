@@ -6,6 +6,25 @@ import { setupAuth } from './auth';
 import { getSpacePages } from './crawler';
 import { exportPageRobust } from './exporter';
 
+const HISTORY_FILE = path.join(config.outputDir, 'export-history.json');
+
+// Helper to load history
+function loadHistory(): Record<string, boolean> {
+    if (fs.existsSync(HISTORY_FILE)) {
+        try {
+            return JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf-8'));
+        } catch (e) {
+            console.warn("Could not parse history file, starting fresh.");
+        }
+    }
+    return {};
+}
+
+// Helper to save history
+function saveHistory(history: Record<string, boolean>) {
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
+}
+
 async function main() {
     console.log("=== Confluence Cloud PDF Exporter ===");
 
@@ -33,15 +52,38 @@ async function main() {
     const page = await context.newPage();
 
     try {
+        // Load History
+        const history = loadHistory();
+
         // 2. Scan for pages
         console.log("\n--- Phase 1: Scanning for Pages ---");
-        const pages = await getSpacePages(page, config.spaceUrl);
+        const { pages, spaceName } = await getSpacePages(page, config.spaceUrl);
 
-        console.log(`\nFound ${pages.length} pages to export.`);
+        console.log(`\nVerified Space Name: ${spaceName}`);
+        console.log(`Found ${pages.length} total pages.`);
+
+        // Setup Space Output Directory
+        const safeSpaceName = spaceName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+        const spaceOutputDir = path.join(config.outputDir, safeSpaceName);
+
+        if (!fs.existsSync(spaceOutputDir)) {
+            console.log(`Creating directory: ${spaceOutputDir}`);
+            fs.mkdirSync(spaceOutputDir, { recursive: true });
+        }
+
+        // Filter out already exported pages
+        const pagesToExport = pages.filter(p => !history[p.url]);
+        console.log(`Skipping ${pages.length - pagesToExport.length} already exported pages.`);
+        console.log(`Remaining pages to export: ${pagesToExport.length}`);
+
+        if (pagesToExport.length === 0) {
+            console.log("All pages have already been exported!");
+            return;
+        }
 
         // Save list for debug
         fs.writeFileSync(
-            path.join(config.outputDir, 'pages-list.json'),
+            path.join(spaceOutputDir, 'pages-list.json'),
             JSON.stringify(pages, null, 2)
         );
 
@@ -51,12 +93,15 @@ async function main() {
         let successCount = 0;
         let failCount = 0;
 
-        for (const [index, p] of pages.entries()) {
-            console.log(`[${index + 1}/${pages.length}] Starting export for: ${p.title}`);
-            const success = await exportPageRobust(page, p.url, config.outputDir);
+        for (const [index, p] of pagesToExport.entries()) {
+            console.log(`[${index + 1}/${pagesToExport.length}] Starting export for: ${p.title}`);
+            const success = await exportPageRobust(page, p.url, spaceOutputDir);
 
             if (success) {
                 successCount++;
+                // Update history immediately
+                history[p.url] = true;
+                saveHistory(history);
             } else {
                 failCount++;
             }

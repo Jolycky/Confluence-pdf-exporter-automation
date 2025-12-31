@@ -25,11 +25,48 @@ export async function exportPageRobust(page: Page, pageUrl: string, outputDir: s
             contentTitle = (await h1.textContent()) || contentTitle;
         }
 
-        const filename = `${sanitizeFilename(contentTitle.trim().replace(' - Confluence', ''))}.pdf`;
-        const outputPath = path.join(outputDir, filename);
+        // BREADCRUMBS handling for folder structure
+        let relativePath = "";
+        try {
+            // Select breadcrumbs
+            const breadcrumbs = page.locator('nav[aria-label="Breadcrumbs"] ol li a');
+            const count = await breadcrumbs.count();
+
+            // We iterate through breadcrumbs to build the path.
+            // Be tolerant of empty breadcrumbs or varied structures.
+            const breadcrumbTexts = [];
+            for (let i = 0; i < count; i++) {
+                const text = await breadcrumbs.nth(i).textContent();
+                if (text) breadcrumbTexts.push(text.trim());
+            }
+
+            // Remove the first item if it likely represents the Space root
+            if (breadcrumbTexts.length > 0) {
+                breadcrumbTexts.shift();
+            }
+
+            // Construct path
+            const sanitizedParts = breadcrumbTexts.map(part => sanitizeFilename(part));
+            relativePath = path.join(...sanitizedParts);
+            console.log(`  - Detected path: ${relativePath}`);
+
+        } catch (e) {
+            console.warn("  - Could not determine breadcrumbs, using root.");
+        }
+
+        const safeFilename = sanitizeFilename(contentTitle.trim().replace(' - Confluence', ''));
+        const filename = `${safeFilename}.pdf`;
+
+        // Final Output Directory
+        const finalDir = path.join(outputDir, relativePath);
+        if (!fs.existsSync(finalDir)) {
+            fs.mkdirSync(finalDir, { recursive: true });
+        }
+
+        const outputPath = path.join(finalDir, filename);
 
         if (fs.existsSync(outputPath)) {
-            console.log(`  - File exists, skipping: ${filename}`);
+            console.log(`  - File exists, skipping: ${path.join(relativePath, filename)}`);
             return true;
         }
 
@@ -60,7 +97,6 @@ export async function exportPageRobust(page: Page, pageUrl: string, outputDir: s
         console.log("  - Waiting for export processing...");
 
         // Wait for the "Download PDF" link to appear
-        // User specified: id="downloadableLink_dynamic" class="space-export-download-path"
         const downloadLink = page.locator('#downloadableLink_dynamic');
 
         // It might take some time for the export to finish generating
@@ -74,7 +110,7 @@ export async function exportPageRobust(page: Page, pageUrl: string, outputDir: s
         const download = await downloadPromise;
         await download.saveAs(outputPath);
 
-        console.log(`  - Download complete: ${filename}`);
+        console.log(`  - Download complete: ${path.join(relativePath, filename)}`);
         return true;
 
     } catch (err: any) {
@@ -83,7 +119,6 @@ export async function exportPageRobust(page: Page, pageUrl: string, outputDir: s
         try {
             const screenshotPath = path.join(outputDir, `error_${Date.now()}.png`);
             await page.screenshot({ path: screenshotPath });
-            // console.error(`  - Saved debug screenshot to ${screenshotPath}`);
         } catch (e) { }
 
         return false;

@@ -62,6 +62,37 @@ export async function getSpacePages(page: Page, spaceUrl: string): Promise<Space
         throw new Error("Failed to determine Space Key. Cannot proceed with API fetch.");
     }
 
+    // Attempt to improve Space Name using API if it is unknown
+    if (spaceName === "Unknown Space") {
+        console.log(`Fetching Space Name for key ${spaceKey} via API...`);
+        try {
+            const name = await page.evaluate(async (sKey) => {
+                try {
+                    // Determine path prefix
+                    const pathPrefix = window.location.pathname.startsWith('/wiki') ? '/wiki' : '';
+                    const resp = await window.fetch(`${pathPrefix}/rest/api/space/${sKey}`);
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        return data.name;
+                    }
+                } catch (e) { }
+                return null;
+            }, spaceKey);
+
+            if (name) {
+                spaceName = name;
+                console.log(`Updated Space Name via API: ${spaceName}`);
+            } else {
+                // Fallback to key if name still not found
+                spaceName = spaceKey;
+                console.log(`Using Space Key as Name: ${spaceName}`);
+            }
+        } catch (e) {
+            console.warn("Failed to fetch space name via API, using Key.");
+            spaceName = spaceKey;
+        }
+    }
+
     // INTERNAL API FETCH STRATEGY
     // This runs INSIDE the browser, using the user's existing auth session.
     console.log("Fetching pages via internal API...");

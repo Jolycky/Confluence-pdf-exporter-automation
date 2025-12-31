@@ -1,6 +1,8 @@
-# Confluence Cloud Browser Automation PDF Exporter
+# Confluence Cloud Automated PDF Exporter
+> **Free, reliable, and automated tool to bulk export Confluence Cloud pages to PDF using Playwright.**
 
-This tool automates the process of exporting Confluence Cloud pages to PDF using a normal user account (no admin API required). It utilizes [Playwright](https://playwright.dev/) to navigate the UI, click "Export to PDF", and save the files locally.
+## Overview
+Are you looking for a way to **export Confluence pages to PDF** without expensive plugins or admin access? This tool provides a **free, automated solution** to crawl your Confluence Cloud space and export every page (including nested trees) as a clean PDF file. It handles authentication, infinite scrolling, and folder organization automatically.
 
 ## Prerequisites
 
@@ -20,11 +22,20 @@ This tool automates the process of exporting Confluence Cloud pages to PDF using
    Example:
    ```typescript
    export const config = {
-       spaceUrl: "https://your-domain.atlassian.net/wiki/spaces/MYSPACE/overview",
+       spaceUrl: process.env.SPACE_URL || "https://your-domain.atlassian.net/wiki/spaces/MYSPACE/overview",
        outputDir: "./output",
-       // ...
+       
+       // Auto-retry configuration
+       retryOnError: false, // Set to true to retry failed exports automatically
+       maxRetries: 3        // Number of times to retry a failed page
    };
    ```
+
+### 3. Features
+
+- **Resume Capability**: The script tracks successfully exported pages in `output/export-history.json`. Rerunning `npm start` will automatically **skip** pages that are already done.
+- **Auto-Retry**: If you encounter frequent network timeouts, enable `retryOnError: true` in `config.ts`.
+- **Folder Structure**: Exports are organized into folders matching your Confluence space hierarchy.
 
 ## Usage
 

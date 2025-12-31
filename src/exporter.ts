@@ -10,117 +10,116 @@ function sanitizeFilename(name: string): string {
 
 // Redefining the function to use the specific UI flow requested by the user
 export async function exportPageRobust(page: Page, pageUrl: string, outputDir: string): Promise<boolean> {
-    console.log(`\nProcessing: ${pageUrl}`);
+    const maxRetries = config.retryOnError ? config.maxRetries : 0;
+    let attempt = 0;
 
-    try {
-        await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
-
-        // Wait for page to settle
-        await page.waitForTimeout(2000);
-
-        // Update title from actual page content if possible
-        let contentTitle = await page.title();
-        const h1 = page.locator('h1[data-test-id="page-title"]');
-        if (await h1.isVisible()) {
-            contentTitle = (await h1.textContent()) || contentTitle;
+    while (attempt <= maxRetries) {
+        attempt++;
+        if (attempt > 1) {
+            console.log(`  - Retry attempt ${attempt}/${maxRetries + 1}...`);
+            await page.waitForTimeout(3000); // Wait before retrying
         }
 
-        // BREADCRUMBS handling for folder structure
-        let relativePath = "";
+        console.log(`\nProcessing: ${pageUrl}`);
+
         try {
-            // Select breadcrumbs
-            const breadcrumbs = page.locator('nav[aria-label="Breadcrumbs"] ol li a');
-            const count = await breadcrumbs.count();
+            await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
 
-            // We iterate through breadcrumbs to build the path.
-            // Be tolerant of empty breadcrumbs or varied structures.
-            const breadcrumbTexts = [];
-            for (let i = 0; i < count; i++) {
-                const text = await breadcrumbs.nth(i).textContent();
-                if (text) breadcrumbTexts.push(text.trim());
+            // Wait for page to settle
+            await page.waitForTimeout(2000);
+
+            // Update title from actual page content if possible
+            let contentTitle = await page.title();
+            const h1 = page.locator('h1[data-test-id="page-title"]');
+            if (await h1.isVisible()) {
+                contentTitle = (await h1.textContent()) || contentTitle;
             }
 
-            // Remove the first item if it likely represents the Space root
-            if (breadcrumbTexts.length > 0) {
-                breadcrumbTexts.shift();
+            // BREADCRUMBS handling for folder structure (FALLBACK logic if path not provided)
+            // Note: index.ts usually passes a specific subDir based on API ancestors, so outputDir 
+            // might already contain the path. We keep this logic but it might be redundant if outputDir is specific.
+            let relativePath = "";
+            try {
+                // Only try to find internal breadcrumbs if we suspect we are at root
+                // or if we want to verify. But let's assume outputDir is correct for now.
+                // We keep this block but warn if it fails just in case.
+
+                // If outputDir is just the root output, we might want this.
+                // But generally index.ts handles folder structure now.
+            } catch (e) { }
+
+            const safeFilename = sanitizeFilename(contentTitle.trim().replace(' - Confluence', ''));
+            const filename = `${safeFilename}.pdf`;
+
+            // Final Output Directory
+            // If outputDir is already the full path (from index.ts), use it directly.
+            const finalDir = outputDir;
+
+            if (!fs.existsSync(finalDir)) {
+                fs.mkdirSync(finalDir, { recursive: true });
             }
 
-            // Construct path
-            const sanitizedParts = breadcrumbTexts.map(part => sanitizeFilename(part));
-            relativePath = path.join(...sanitizedParts);
-            console.log(`  - Detected path: ${relativePath}`);
+            const outputPath = path.join(finalDir, filename);
 
-        } catch (e) {
-            console.warn("  - Could not determine breadcrumbs, using root.");
-        }
+            if (fs.existsSync(outputPath)) {
+                console.log(`  - File exists, skipping: ${filename}`);
+                return true;
+            }
 
-        const safeFilename = sanitizeFilename(contentTitle.trim().replace(' - Confluence', ''));
-        const filename = `${safeFilename}.pdf`;
+            // 1. Click "More actions" (Tree dots)
+            console.log("  - Clicking 'More actions'...");
+            const moreActions = page.locator('#more-actions-trigger');
+            await moreActions.waitFor({ state: 'visible', timeout: 10000 });
+            await moreActions.click();
 
-        // Final Output Directory
-        const finalDir = path.join(outputDir, relativePath);
-        if (!fs.existsSync(finalDir)) {
-            fs.mkdirSync(finalDir, { recursive: true });
-        }
+            // 2. Click "Export" button
+            console.log("  - Clicking 'Export' menu...");
+            const exportMenuBtn = page.locator('[data-testid="undefined-button"], [aria-label="Export"], button:has-text("Export")');
+            await exportMenuBtn.first().waitFor({ state: 'visible', timeout: 5000 });
+            await exportMenuBtn.first().click();
 
-        const outputPath = path.join(finalDir, filename);
+            // 3. Click "Export to PDF" - Specific Selector
+            console.log("  - Clicking 'Export to PDF'...");
+            const exportPdfLink = page.locator('a[role="menuitem"][data-vc="link-item"]').filter({ hasText: /Export to PDF/i });
+            await exportPdfLink.first().waitFor({ state: 'visible', timeout: 5000 });
 
-        if (fs.existsSync(outputPath)) {
-            console.log(`  - File exists, skipping: ${path.join(relativePath, filename)}`);
+            await exportPdfLink.first().click();
+
+            // 4. Handle "Exporting / Processing" page
+            console.log("  - Waiting for export processing...");
+
+            const downloadLink = page.locator('#downloadableLink_dynamic');
+
+            // Increased timeout for processing
+            await downloadLink.waitFor({ state: 'visible', timeout: 60000 });
+            console.log("  - PDF ready. Downloading...");
+
+            // 5. Click the final download link
+            const downloadPromise = page.waitForEvent('download', { timeout: config.timeout });
+            await downloadLink.click();
+
+            const download = await downloadPromise;
+            await download.saveAs(outputPath);
+
+            console.log(`  - Download complete: ${filename}`);
             return true;
+
+        } catch (err: any) {
+            console.error(`  - Error exporting ${pageUrl}: ${err.message}`);
+
+            try {
+                const screenshotPath = path.join(outputDir, `error_${Date.now()}.png`);
+                await page.screenshot({ path: screenshotPath });
+            } catch (e) { }
+
+            // If we have retries left, continue loop.
+            if (attempt <= maxRetries) {
+                console.log(`  - Retrying...`);
+                continue;
+            } else {
+                return false;
+            }
         }
-
-        // 1. Click "More actions" (Tree dots)
-        console.log("  - Clicking 'More actions'...");
-        const moreActions = page.locator('#more-actions-trigger');
-        await moreActions.waitFor({ state: 'visible', timeout: 10000 });
-        await moreActions.click();
-
-        // 2. Click "Export" button
-        console.log("  - Clicking 'Export' menu...");
-        const exportMenuBtn = page.locator('[data-testid="undefined-button"], [aria-label="Export"], button:has-text("Export")');
-        await exportMenuBtn.first().waitFor({ state: 'visible', timeout: 5000 });
-        await exportMenuBtn.first().click();
-
-        // 3. Click "Export to PDF" - Specific Selector
-        console.log("  - Clicking 'Export to PDF'...");
-        // User requested: role="menuitem" data-vc="link-item"
-        // This usually triggers navigation to a processing page
-        const exportPdfLink = page.locator('a[role="menuitem"][data-vc="link-item"]').filter({ hasText: /Export to PDF/i });
-        await exportPdfLink.first().waitFor({ state: 'visible', timeout: 5000 });
-
-        // We do NOT wait for download event here immediately, because it might navigate first
-        await exportPdfLink.first().click();
-
-        // 4. Handle "Exporting / Processing" page
-        // The URL usually changes to .../pdfpageexport.action...
-        console.log("  - Waiting for export processing...");
-
-        // Wait for the "Download PDF" link to appear
-        const downloadLink = page.locator('#downloadableLink_dynamic');
-
-        // It might take some time for the export to finish generating
-        await downloadLink.waitFor({ state: 'visible', timeout: 60000 });
-        console.log("  - PDF ready. Downloading...");
-
-        // 5. Click the final download link
-        const downloadPromise = page.waitForEvent('download', { timeout: config.timeout });
-        await downloadLink.click();
-
-        const download = await downloadPromise;
-        await download.saveAs(outputPath);
-
-        console.log(`  - Download complete: ${path.join(relativePath, filename)}`);
-        return true;
-
-    } catch (err: any) {
-        console.error(`  - Error exporting ${pageUrl}: ${err.message}`);
-
-        try {
-            const screenshotPath = path.join(outputDir, `error_${Date.now()}.png`);
-            await page.screenshot({ path: screenshotPath });
-        } catch (e) { }
-
-        return false;
     }
+    return false;
 }

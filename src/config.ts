@@ -14,5 +14,9 @@ export const config = {
     headless: false,
 
     // Timeout (ms) for operations
-    timeout: 60000
+    timeout: 60000,
+
+    // Auto-retry configuration
+    retryOnError: false, // Set to true to retry failed exports automatically
+    maxRetries: 3        // Number of times to retry a failed page
 };

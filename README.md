@@ -32,7 +32,7 @@ This tool automates the process of exporting Confluence Cloud pages to PDF using
 The script needs to save your login session.
 Run the script:
 ```bash
-npx ts-node src/index.ts
+npm start
 ```
 - If no `auth.json` is found, a **browser window will open**.
 - Log in to Atlassian manually.
@@ -43,7 +43,7 @@ npx ts-node src/index.ts
 ### 2. Subsequent Runs
 Just run the command again. It will reuse the session in `auth.json`.
 ```bash
-npx ts-node src/index.ts
+npm start
 ```
 
 ## How It Works

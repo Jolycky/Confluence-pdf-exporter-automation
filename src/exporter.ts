@@ -120,74 +120,79 @@ export async function exportPage(page: Page, pageUrl: string, outputDir: string)
     }
 }
 
-// Redefining the function to be more robust with the Promise race for download
+// Redefining the function to use the direct export endpoint for reliability
 export async function exportPageRobust(page: Page, pageUrl: string, outputDir: string): Promise<boolean> {
     console.log(`\nProcessing: ${pageUrl}`);
-    const pageTitle = await page.title();
-    const cleanTitle = sanitizeFilename(pageTitle.replace(' - Confluence', '').trim()); // Fallback name
-    let filename = `${cleanTitle}.pdf`;
-    let outputPath = path.join(outputDir, filename);
+
+    // Extract Page ID from URL
+    // Format usually: .../pages/123456789/Title...
+    const pageIdMatch = pageUrl.match(/pages\/(\d+)/);
+    if (!pageIdMatch) {
+        console.error(`  - Could not extract Page ID from: ${pageUrl}`);
+        return false;
+    }
+    const pageId = pageIdMatch[1];
+
+    // Construct the direct Export URL
+    // Endpoint: /wiki/spaces/flyingpdf/pdfpageexport.action?pageId=...
+    const urlObj = new URL(pageUrl);
+    const exportUrl = `${urlObj.origin}/wiki/spaces/flyingpdf/pdfpageexport.action?pageId=${pageId}`;
 
     try {
-        await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(1000);
+        // Strategy:
+        // 1. Trigger the navigation to the export URL.
+        // 2. This URL usually initiates a download immediately OR shows a "Exporting" progress page.
+        //    If it shows a progress page, we might need to wait for it to finish and trigger download.
+        //    However, usually the 'flyingpdf' action triggers the generation and download stream.
 
-        // Update title from actual page content if possible
-        const contentTitle = await page.locator('h1[data-test-id="page-title"]').textContent()
-            || await page.title();
+        console.log(`  - Navigating to export endpoint: ${exportUrl}`);
 
-        filename = `${sanitizeFilename(contentTitle.trim().replace(' - Confluence', ''))}.pdf`;
-        outputPath = path.join(outputDir, filename);
-
-        if (fs.existsSync(outputPath)) {
-            console.log(`  - File exists, skipping: ${filename}`);
-            return true;
-        }
-
-        // Open Menu
-        const moreActions = page.locator('button[aria-label="More actions"], button[data-testid="page-metadata-actions-trigger"]');
-        await moreActions.first().click();
-
-        // Click Export to PDF
-        // We prepare the download promise AHEAD of time just in case it's immediate
+        // We set up the download listener immediately
         const downloadPromise = page.waitForEvent('download', { timeout: config.timeout });
 
-        const exportItem = page.getByRole('menuitem', { name: /Export to PDF/i }).or(page.getByText('Export to PDF'));
-
-        // This click might trigger download OR open a modal.
-        await exportItem.click();
-
-        // Check for modal
-        // We race: either download starts, or a modal appears.
-        // But 'downloadPromise' will hang if modal appears.
-        // So we need a poller or a race.
-
-        const modalSelector = 'div[role="dialog"] button:has-text("Export")';
-
+        // Go to the export URL
+        // We use try/catch because if it's a download, the navigation might "fail" or stay loading
         try {
-            // Wait a short time to see if a modal appears
-            const modalBtn = page.locator(modalSelector);
-            await modalBtn.waitFor({ state: 'visible', timeout: 5000 });
-
-            console.log("  - Modal detected. Confirming export...");
-            await modalBtn.click();
+            await page.goto(exportUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         } catch (e) {
-            // No modal appeared within 5s, assuming strictly direct download or "Preparing..." overlay that auto-downloads
-            console.log("  - No confirmation modal detected, waiting for download...");
+            // Ignore navigation errors that are actually just "download started" interruptions
+            // verification will happen via downloadPromise
         }
 
+        // Wait for the download
         const download = await downloadPromise;
-        await download.saveAs(outputPath);
 
+        // Determine filename
+        // We prefer the name from the crawler (passed via pageUrl analysis? No, we don't have the title here easily if we skipped the page load)
+        // We can get the suggested filename from the download object.
+        const suggestedName = download.suggestedFilename();
+        const filename = sanitizeFilename(suggestedName);
+        const outputPath = path.join(outputDir, filename);
+
+        // Check if exists
+        if (fs.existsSync(outputPath)) {
+            console.log(`  - File exists, overwriting: ${filename}`);
+            // optional: skip if exists? User wants "Export one by one", maybe overwrite is better to ensure freshness.
+        }
+
+        await download.saveAs(outputPath);
         console.log(`  - Download complete: ${filename}`);
-        await page.waitForTimeout(1000); // Cool down
+
         return true;
 
     } catch (err: any) {
         console.error(`  - Error exporting ${pageUrl}: ${err.message}`);
-        const screenshotPath = path.join(outputDir, `error_${Date.now()}.png`);
-        await page.screenshot({ path: screenshotPath });
-        console.error(`  - Saved screenshot to ${screenshotPath}`);
+
+        // Fallback: If direct URL failed (e.g. 403, or different URL structure), maybe try visiting page?
+        // For now, logging error.
+
+        // Optional: Capture screenshot of whatever page we ended up on (e.g. error page)
+        try {
+            const screenshotPath = path.join(outputDir, `error_${pageId}.png`);
+            await page.screenshot({ path: screenshotPath });
+            console.error(`  - Saved debug screenshot to ${screenshotPath}`);
+        } catch (e) { }
+
         return false;
     }
 }

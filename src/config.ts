@@ -1,7 +1,7 @@
 export const config = {
     // URL of the Confluence Space Home or Pages list
     // Example: https://your-domain.atlassian.net/wiki/spaces/SPACEKEY/overview
-    spaceUrl: "REPLACE_WITH_YOUR_SPACE_URL",
+    spaceUrl: "https://da-ilb.atlassian.net/wiki/spaces/LD25",
 
     // Directory to save PDFs
     outputDir: "./output",
